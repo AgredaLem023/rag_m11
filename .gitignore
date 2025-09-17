@@ -1,0 +1,7 @@
+venv_ragM11/
+.env
+__pycache__/
+*.pyc
+.DS_Store
+miscFiles/
+data/microsoft-annual-report.pdf
