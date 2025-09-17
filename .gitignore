@@ -5,3 +5,5 @@ __pycache__/
 .DS_Store
 miscFiles/
 data/microsoft-annual-report.pdf
+*.pkl
+chroma_*
