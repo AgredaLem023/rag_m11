@@ -13,6 +13,9 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from dotenv import load_dotenv
 
+ABSTAIN_MSG = ("I'm sorry, I can't answer that query based on the information I have access to. "
+               "My knowledge is limited, and I couldn't find a relevant passage.  Please try rephrasing your question or asking about a different topic.")
+
 # Simple BM25 implementation (fallback without external dependencies)
 class SimpleBM25:
     def __init__(self, corpus_tokens: List[List[str]], k1: float = 1.5, b: float = 0.75):
@@ -324,7 +327,7 @@ def generate_answer(
     model: str = "gpt-5-mini",
 ) -> str:
     if not contexts:
-        return "No answer"
+        return ABSTAIN_MSG
     # Build grounded context with citations
     context_blocks = []
     for i, (ctx, m) in enumerate(zip(contexts, metas), start=1):
@@ -335,7 +338,7 @@ def generate_answer(
     system_prompt = (
         "You are a careful, evidence-grounded assistant. "
         "Use ONLY the provided context snippets to answer. "
-        "If the context is insufficient to answer, reply exactly: No answer. "
+        f"If the context is insufficient to answer, reply exactly: {ABSTAIN_MSG} "
         "Cite evidence after each sentence using the provided citation keys in square brackets. "
         "Do not use prior knowledge."
     )
@@ -349,7 +352,13 @@ def generate_answer(
         {"role": "user", "content": user_prompt},
     ])
     resp = client.chat.completions.create(model=model, messages=messages)
-    return resp.choices[0].message.content or "No answer"
+    content = (resp.choices[0].message.content or "").strip()
+    if not content:
+        return ABSTAIN_MSG
+    low = content.lower()
+    if "no answer" in low or "i don't know" in low:
+        return ABSTAIN_MSG
+    return content
 
 def main():
     load_dotenv()
@@ -357,7 +366,7 @@ def main():
 
     # Ingest multi-doc corpus
     t0 = time.perf_counter()
-    dataset_path = "data/microsoft-annual-report.pdf"
+    dataset_path = "data\2wikimqa.jsonl"
     collection, bm25, chunk_id_to_text, chunk_id_to_meta = ingest_corpus(dataset_path)
     t_ingest = time.perf_counter() - t0
 
@@ -365,7 +374,7 @@ def main():
     cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     # Example query (replace with user input or evaluation loop)
-    original_query = "How did Azure and other server products contribute to Intelligent Cloud revenue growth?"
+    original_query = "Where did Helena Carroll's father study?"
 
     # Multi-query expansion
     t1 = time.perf_counter()
@@ -382,7 +391,7 @@ def main():
     # Abstain if nothing retrieved
     if not candidate_ids:
         print("Answer:")
-        print("No answer")
+        print(ABSTAIN_MSG)
         print(f"Latency - ingest: {t_ingest:.3f}s | expand: {t_expand:.3f}s | retrieve: {t_retrieve:.3f}s | rerank: 0.000s | generate: 0.000s")
         return
 
@@ -395,13 +404,13 @@ def main():
 
     if abstain_rerank:
         print("Answer:")
-        print("No answer")
+        print(ABSTAIN_MSG)
         print(f"Latency - ingest: {t_ingest:.3f}s | expand: {t_expand:.3f}s | retrieve: {t_retrieve:.3f}s | rerank: {t_rerank:.3f}s | generate: 0.000s")
         return
 
     # Generation with grounded prompt and abstention rule in instructions
     t4 = time.perf_counter()
-    answer = generate_answer(client, original_query, selected_texts, selected_metas, model="gpt-3.5-turbo")
+    answer = generate_answer(client, original_query, selected_texts, selected_metas, model="gpt-5-mini")
     t_generate = time.perf_counter() - t4
 
     print("Answer:")
