@@ -11,6 +11,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from langchain.text_splitter import RecursiveCharacterTextSplitter, SentenceTransformersTokenTextSplitter
 from chonkie import SentenceChunker
+from transformers import AutoTokenizer
 
 # Load environment variables from .env file
 load_dotenv()
@@ -32,8 +33,11 @@ pdf_texts = [text for text in pdf_texts if text]
 # Use Chonkie's SentenceChunker for sentence-aware, token-bounded chunking
 doc_text = "\n\n".join(pdf_texts)
 
+# Align tokenizer with the local SentenceTransformers embedding model
+hf_tok = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+
 chunker = SentenceChunker(
-    tokenizer_or_token_counter="gpt2",
+    tokenizer_or_token_counter=hf_tok,
     chunk_size=512,
     chunk_overlap=50,
     min_sentences_per_chunk=1,
@@ -56,7 +60,7 @@ count = chroma_collection.count()
 cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
-def generate_multi_query(query, model="gpt-3.5-turbo"):
+def generate_multi_query(query, model="gpt-5-mini"):
 
     prompt = """
     You are a knowledgeable financial research assistant. 
@@ -84,7 +88,7 @@ def generate_multi_query(query, model="gpt-3.5-turbo"):
     return content
 
 original_query = (
-    "What details can you provide about the factors that led to revenue growth?"
+    "What drove Microsoft’s Security business to surpass $20 billion in revenue?"
 )
 generated_queries = generate_multi_query(original_query)
 
