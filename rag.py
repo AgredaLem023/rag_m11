@@ -16,7 +16,47 @@ from dotenv import load_dotenv
 ABSTAIN_MSG = ("I'm sorry, I can't answer that query based on the information I have access to. "
                "My knowledge is limited, and I couldn't find a relevant passage.  Please try rephrasing your question or asking about a different topic.")
 
-# Simple BM25 implementation (fallback without external dependencies)
+_PASSAGE_HEADER = re.compile(r"Passage\s+(\d+):\s*([^\n]+)\s*\n", re.IGNORECASE)
+
+def _split_2wiki_context(example_id: str, context_str: str) -> List[Dict[str, Any]]:
+    """
+    Split a 2WikiMultihopQA 'context' mega-string into individual passages.
+    Returns a list of dicts suitable for downstream ingestion:
+      {doc_id, title, source, text}
+    """
+    parts: List[Dict[str, Any]] = []
+    headers = list(_PASSAGE_HEADER.finditer(context_str))
+
+    for i, m in enumerate(headers):
+        pnum = m.group(1)
+        title = (m.group(2) or "").strip()
+        start = m.end()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(context_str)
+        body = context_str[start:end].strip()
+        if not body:
+            continue
+        doc_id = f"{example_id}::passage_{pnum}"
+        parts.append({
+            "doc_id": doc_id,
+            "title": title or f"passage_{pnum}",
+            "source": f"2wikimqa::{example_id}::{pnum}",
+            "text": body
+        })
+
+    # Fallback: if no headers matched, keep entire context as one doc
+    if not parts and context_str.strip():
+        parts.append({
+            "doc_id": f"{example_id}::context",
+            "title": "context",
+            "source": f"2wikimqa::{example_id}",
+            "text": context_str.strip()
+        })
+
+    return parts
+
+
+# BM25 implementation
+
 class SimpleBM25:
     def __init__(self, corpus_tokens: List[List[str]], k1: float = 1.5, b: float = 0.75):
         self.corpus_tokens = corpus_tokens
@@ -80,17 +120,20 @@ def build_chunker() -> SentenceChunker:
         min_sentences_per_chunk=1,
     )
 
+
+# Generic record parser
+
 def _parse_record(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Flexible field extraction
     text = None
-    for key in ["text", "passage", "content", "document", "ctx"]:
+    for key in ["text", "passage", "content", "document", "ctx", "context"]:  # added "context" as a generic fallback
         if key in obj and isinstance(obj[key], str) and obj[key].strip():
             text = obj[key].strip()
             break
     if not text:
         return None
     doc_id = None
-    for key in ["id", "doc_id", "page_id", "pid"]:
+    for key in ["id", "doc_id", "page_id", "pid", "_id"]:
         if key in obj:
             doc_id = str(obj[key])
             break
@@ -110,6 +153,9 @@ def _parse_record(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             break
     return {"doc_id": doc_id, "title": title, "source": source, "text": text}
 
+
+# Ingestion with modified JSONL branch to handle 2Wiki 'context' with splitter
+
 def ingest_corpus(
     dataset_path: Optional[str],
     collection_name: str = "multidoc-collection",
@@ -120,7 +166,7 @@ def ingest_corpus(
     store in Chroma with metadata, and build an in-memory BM25 index over chunks.
     """
     # Determine dataset path with fallbacks
-    preferred = dataset_path or "data/wWikiMultihopQA"
+    preferred = dataset_path or "data/2wikimqa.jsonl"
     fallback_jsonl = "data/2wikimqa.jsonl"
     fallback_pdf = "data/microsoft-annual-report.pdf"
     path = preferred if os.path.exists(preferred) else (fallback_jsonl if os.path.exists(fallback_jsonl) else fallback_pdf)
@@ -147,9 +193,15 @@ def ingest_corpus(
                                 obj = json.loads(line)
                             except Exception:
                                 continue
-                            rec = _parse_record(obj)
-                            if rec:
-                                docs.append(rec)
+                            # 2Wiki-aware branch
+                            if isinstance(obj.get("context"), str) and isinstance(obj.get("input"), str):
+                                ex_id = str(obj.get("_id") or abs(hash(line)) % (10**12))
+                                context_docs = _split_2wiki_context(ex_id, obj["context"])
+                                docs.extend(context_docs)
+                            else:
+                                rec = _parse_record(obj)
+                                if rec:
+                                    docs.append(rec)
                 elif fname.lower().endswith(".txt"):
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
@@ -169,9 +221,17 @@ def ingest_corpus(
                     obj = json.loads(line)
                 except Exception:
                     continue
-                rec = _parse_record(obj)
-                if rec:
-                    docs.append(rec)
+
+                # 2Wiki-aware branch
+                if isinstance(obj.get("context"), str) and isinstance(obj.get("input"), str):
+                    ex_id = str(obj.get("_id") or abs(hash(line)) % (10**12))
+                    context_docs = _split_2wiki_context(ex_id, obj["context"])
+                    docs.extend(context_docs)
+                else:
+                    # generic fallback
+                    rec = _parse_record(obj)
+                    if rec:
+                        docs.append(rec)
     else:
         # Fallback: single PDF
         try:
@@ -232,6 +292,9 @@ def ingest_corpus(
     bm25.doc_ids = bm25_chunk_ids  # type: ignore
 
     return collection, bm25, chunk_id_to_text, chunk_id_to_meta
+
+
+# Retrieval, Rerank and Answer processes
 
 def generate_multi_query(client: OpenAI, query: str, model: str = "gpt-5-mini") -> List[str]:
     prompt = (
@@ -366,7 +429,9 @@ def main():
 
     # Ingest multi-doc corpus
     t0 = time.perf_counter()
-    dataset_path = "data\2wikimqa.jsonl"
+    # NOTE: for 2WikiMultihopQA, point this to your JSONL, e.g.:
+    # dataset_path = "/mnt/data/2wikimqa.jsonl"
+    dataset_path = "data/microsoft-annual-report.pdf"
     collection, bm25, chunk_id_to_text, chunk_id_to_meta = ingest_corpus(dataset_path)
     t_ingest = time.perf_counter() - t0
 
@@ -374,7 +439,7 @@ def main():
     cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     # Example query (replace with user input or evaluation loop)
-    original_query = "Where did Helena Carroll's father study?"
+    original_query = "As of June 30, 2023, how many full-time employees did Microsoft have, and what was the U.S. vs international split?"
 
     # Multi-query expansion
     t1 = time.perf_counter()
@@ -410,7 +475,7 @@ def main():
 
     # Generation with grounded prompt and abstention rule in instructions
     t4 = time.perf_counter()
-    answer = generate_answer(client, original_query, selected_texts, selected_metas, model="gpt-5-mini")
+    answer = generate_answer(client, original_query, selected_texts, selected_metas, model="gpt-3.5-turbo")
     t_generate = time.perf_counter() - t4
 
     print("Answer:")
