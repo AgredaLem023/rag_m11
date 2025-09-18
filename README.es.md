@@ -58,32 +58,34 @@ Notas:
 
 ```mermaid
 flowchart TB
-  subgraph CLI
-    CLI[rag/cli.py]
+  %% Subgraphs (note different IDs and optional display labels in quotes)
+  subgraph cluster_CLI["CLI"]
+    cli[rag/cli.py]
   end
 
-  subgraph Ingestion
+  subgraph cluster_Ingestion["Ingestion"]
     PARSER[rag/ingestion/parser.py]
     CHUNK[rag/ingestion/chunking.py]
     PERSIST[rag/ingestion/persist.py]
   end
 
-  subgraph Retrieval
+  subgraph cluster_Retrieval["Retrieval"]
     BM25[rag/retrieval/bm25.py]
     EXP[rag/retrieval/expansion.py]
     FUSION[rag/retrieval/fusion.py]
   end
 
-  subgraph Rerank
+  subgraph cluster_Rerank["Rerank"]
     XENC[rag/rerank/cross_encoder.py]
   end
 
-  subgraph Generation
+  subgraph cluster_Generation["Generation"]
     ANS[rag/generation/answer.py]
   end
 
-  CLI -->|--build| PERSIST
-  CLI -->|query| EXP --> FUSION
+  %% Edges
+  cli -->|--build| PERSIST
+  cli -->|query| EXP --> FUSION
   FUSION --> BM25
   FUSION --> XENC
   XENC --> ANS
